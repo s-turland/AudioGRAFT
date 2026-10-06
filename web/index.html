@@ -1,0 +1,384 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GRAFT: Audio-Aligned Latent Graph Flows</title>
+<meta name="description" content="Generating modular audio system topologies and their parameters from a target sound, with an audio-aligned latent graph autoencoder and a conditional rectified flow.">
+<meta property="og:title" content="Generating Modular System Topologies with Audio-Aligned Latent Graph Flows">
+<meta property="og:description" content="GRAFT generates a modular audio system's structure and settings jointly from a target sound. Audio examples, figures and results.">
+<meta property="og:type" content="website">
+<meta property="og:image" content="https://s-turland.github.io/AudioGRAFT/static/img/method.webp">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Source+Code+Pro:wght@400&family=Source+Sans+3:wght@400;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+<link rel="stylesheet" href="static/css/graft.css">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+<script defer src="static/js/graft.js"></script>
+</head>
+<body>
+
+<header class="masthead">
+  <div class="wide">
+    <h1>Generating Modular System Topologies with Audio-Aligned Latent Graph Flows</h1>
+    <p class="authors">
+      <span>Sean Turland<sup>1</sup></span>
+      <span>Alec Wright<sup>1</sup></span>
+      <span>Stefan Bilbao<sup>2</sup></span>
+      <span>Amos Storkey<sup>3</sup></span>
+    </p>
+    <p class="affil">
+      <span><sup>1</sup>Acoustics and Audio Group, University of Edinburgh</span>
+      <span><sup>2</sup>STMS Lab, IRCAM&ndash;CNRS&ndash;Sorbonne University</span>
+      <span><sup>3</sup>School of Informatics, University of Edinburgh</span>
+    </p>
+    <p class="venue">Submitted to IEEE ICASSP 2027 <span class="soon">&middot; paper and code to follow</span></p>
+    <nav class="links">
+      <a href="#examples">Audio examples</a>
+      <a href="#method">Method</a>
+      <a href="#results">Results</a>
+      <a href="#cite">BibTeX</a>
+    </nav>
+  </div>
+</header>
+
+<!-- ===================================================================== -->
+<section class="wide" id="teaser">
+  <div class="controls" id="traj-controls"></div>
+  <figure>
+    <div class="figure-sheet">
+      <div class="traj" id="traj"></div>
+    </div>
+    <figcaption>
+      <span class="label">Figure 1</span>
+      From noise to a modular system. A conditional rectified flow carries a set
+      of node embeddings from $\mathbf Z_0\sim\mathcal N(\mathbf 0,\mathbf I)$ to
+      $\mathbf Z_1$, conditioned on the clip on the left. At six times along the
+      path the state $\mathbf Z_t$ itself is passed through the frozen graph
+      decoder and rendered; the bar under each render is its STFT distance to
+      the condition, and an early state may decode to a graph that does not
+      render. Select an example above, and click any spectrogram to listen.
+    </figcaption>
+  </figure>
+</section>
+
+<section class="measure abstract" id="abstract">
+  <h2>Abstract</h2>
+  <p>
+    Audio inversion, or sound matching, is the task of finding the settings of
+    an audio system that reproduce a target sound. Prior work assumes systems
+    have a broadly fixed structure, which limits the range of sounds it can
+    match. This work instead approaches the task as a graph problem, generating
+    a system&rsquo;s structure and settings jointly as an arbitrary composition
+    of modelled processor types. We propose GRAFT, a two-stage audio inversion
+    process. We first define an autoencoder that maps graphs to a set of node
+    embeddings, aligned according to the sound each graph produces. A
+    flow-based generative model is then trained to produce new graphs that
+    approximate a target audio clip. Across graphs of up to 40 modules, GRAFT
+    produces a playable system for 99&ndash;100% of targets, whereas prior
+    tokenised flow-based methods fail to reliably generate valid systems for
+    larger graph sizes. The proposed alignment strategy further reduces audio
+    reconstruction error by up to 14% for graphs of up to 20 connected modules.
+    These findings pave the way for further structural learning across a
+    variety of audio processing systems.
+  </p>
+</section>
+
+<hr class="section-rule">
+
+<!-- ===================================================================== -->
+<section id="problem">
+  <div class="measure">
+    <h2><span class="num">1</span>Modular systems as graphs</h2>
+    <p>
+      The output of a modular audio system depends on both its modules&rsquo;
+      control parameters and their routing topology. Sound-matching methods
+      to date fix the topology and invert the parameters; a modular system
+      would instead require a dense supergraph of all configurations, which
+      grows exponentially with the number of modules. We therefore treat the
+      system itself as the object to generate.
+    </p>
+    <p>
+      A graph $G=(V,E)$ describes the system. Each node $v\in V$ is a module
+      with a discrete type $\tau_v$ and a continuous parameter vector
+      $\boldsymbol\theta_v\in\mathbb R^{P_{\tau_v}}$; each edge
+      $e_{u,v}\in E$ has a class $\kappa_{u,v}$ and features
+      $\boldsymbol\psi_{u,v}$. The renderer $\mathcal R(G)=\mathbf y$ produces
+      audio and is treated as a black box. In the trivial case of a single node
+      with no edges, this recovers fixed-topology parameter modelling.
+    </p>
+  </div>
+
+  <div class="wide">
+    <figure>
+      <div class="figure-sheet patch" id="patch">
+        <div>
+          <svg id="patch-svg" viewBox="0 0 660 400" role="img" aria-label="A six-node synthesiser patch drawn as a directed graph"></svg>
+          <div class="key" id="patch-key"></div>
+        </div>
+        <div class="patch-side">
+          <h4 class="sr-only" style="display:none">Listen</h4>
+          <div style="font-family:var(--sans);font-size:.74rem;font-weight:600;letter-spacing:.07em;text-transform:uppercase;color:var(--ink-3);margin-bottom:.4rem">Render of this graph, $\mathcal R(G)$</div>
+          <div id="patch-target"></div>
+          <div style="font-family:var(--sans);font-size:.74rem;font-weight:600;letter-spacing:.07em;text-transform:uppercase;color:var(--ink-3);margin:1rem 0 .4rem">GRAFT-CQT, from that audio alone</div>
+          <div id="patch-graft"></div>
+          <p style="font-family:var(--sans);font-size:.8rem;color:var(--ink-2);margin:.45rem 0 0;line-height:1.45">
+            The generated graph is isomorphic to this one with matching type
+            labels (exact recovery); its continuous parameters are its own.
+          </p>
+          <div class="inspect" id="patch-inspect">Hover over a module or a connection.</div>
+        </div>
+      </div>
+      <figcaption>
+        <span class="label">Figure 2</span>
+        One system from the $n_{\max}=10$ test set, drawn as the typed graph the
+        model generates: a keyboard supplying pitch and gate timing, two
+        envelopes, a sawtooth LFO and a sine oscillator into the output. Node
+        colour gives the module&rsquo;s role and edge colour its class; the
+        printed values are the stored parameters. Hover to isolate a module and
+        its connections.
+      </figcaption>
+    </figure>
+  </div>
+
+  <div class="measure">
+    <p>
+      Many distinct graphs produce perceptually equivalent audio, and every
+      graph has as many labellings as it has node permutations. The task is
+      therefore to model the distribution of valid graphs over the pre-image
+    </p>
+    <div class="eq">$$\mathcal R^{-1}(\mathbf y)=\{\,G\in\mathcal G \mid \mathcal R(G)=\mathbf y\,\},$$</div>
+    <p>
+      with a model invariant to relabelling,
+      $p(\pi\cdot G\mid\mathbf y)=p(G\mid\mathbf y)$ for any permutation $\pi$.
+    </p>
+  </div>
+</section>
+
+<!-- ===================================================================== -->
+<section id="method">
+  <div class="measure">
+    <h2><span class="num">2</span>Method</h2>
+    <p>
+      GRAFT is trained in two stages. Stage&nbsp;1 is a permutation-equivariant
+      autoencoder that maps a graph to a set of node embeddings, organised
+      according to the sound the graph makes. Stage&nbsp;2 trains a flow-based
+      velocity model over the frozen distribution of those embeddings,
+      conditioned on audio.
+    </p>
+  </div>
+  <div class="wide">
+    <figure>
+      <div class="figure-sheet"><img class="full" src="static/img/method.svg" alt="Two-stage GRAFT method diagram" width="1014" height="289" loading="lazy"></div>
+      <figcaption>
+        <span class="label">Figure 3</span>
+        (<em>Stage 1</em>) a patch $G$ is encoded, with its magnetic Laplacian
+        eigenvectors, into node latents $\mathbf Z$ and decoded back
+        ($\mathcal L_{\mathrm{AE}}$); the pooled read-out $\mathbf u$ is aligned
+        with an audio descriptor $\boldsymbol\phi(\mathbf y)$
+        ($\mathcal L_{\mathrm{CKA}}$). (<em>Stage 2</em>) a flow conditioned on
+        $\mathbf c(\mathbf y)$ carries $\mathbf Z_0$ to $\mathbf Z_1$, decoded to
+        $\hat G$ with render $\hat{\mathbf y}$.
+      </figcaption>
+    </figure>
+  </div>
+
+  <div class="measure">
+    <h3>Stage 1 &middot; an audio-aligned graph autoencoder</h3>
+    <p>
+      Each node is indexed into one of $n_{\max}$ slots, with a binary presence
+      indicator. Every graph here is directed and acyclic, so direction is
+      encoded through the magnetic Laplacian
+    </p>
+    <div class="eq">$$\mathbf L_q=\mathbf D-\mathbf S\odot\exp\!\big(2\pi\mathrm i\,q(\mathbf A-\mathbf A^\top)\big),$$</div>
+    <p>
+      whose eigenpairs, computed over the active subgraph, are compressed and
+      concatenated to each node&rsquo;s features. A GINE encoder outputs a
+      factorised Gaussian posterior over the node set,
+      $q_\phi(\mathbf Z\mid G)=\prod_s\mathcal N(\mathbf z_s;\boldsymbol\mu_s,\operatorname{diag}\boldsymbol\sigma_s^2)$,
+      and the decoder reads adjacency and edge classes through bilinear heads
+      and node presence, type and parameters through small MLPs.
+    </p>
+    <p>
+      The renderer is a black box, so no audio gradient reaches the graph. A
+      small parameter error can therefore be a large perceptual one. We
+      organise the latent space by sound instead: the posterior means are
+      pooled and projected to a low-dimensional read-out
+      $\mathbf u_i=\mathbf W\operatorname{LN}(\bar{\mathbf z}_i)+\mathbf b$,
+      and the neighbourhoods of $\mathbf u$ are matched to those of a fixed audio
+      descriptor $\boldsymbol\phi(\mathbf y)$ by centred kernel alignment over a
+      self-tuning Gaussian affinity,
+    </p>
+    <div class="eq">$$\mathcal L_{\rm align}=1-\frac{\langle\mathbf H\mathbf K(\mathbf U)\mathbf H,\ \mathbf H\mathbf K(\boldsymbol\Phi)\mathbf H\rangle_F}{\|\mathbf H\mathbf K(\mathbf U)\mathbf H\|_F\,\|\mathbf H\mathbf K(\boldsymbol\Phi)\mathbf H\|_F}.$$</div>
+    <p>
+      Alignment acts on an 8-dimensional read-out rather than on the latents
+      directly, so it organises a small audio-relevant subspace while the
+      remaining directions stay free for reconstruction.
+      <span class="method">GRAFT-CQT</span> and <span class="method">GRAFT-STFT</span>
+      differ only in $\boldsymbol\phi$ (a constant-$Q$ transform or a
+      log-frequency STFT); <span class="method">GRAFT-Unaligned</span> sets
+      $\lambda_{\rm align}=0$.
+    </p>
+
+    <h3>Stage 2 &middot; a conditional latent flow</h3>
+    <p>
+      With the autoencoder frozen, a conditional rectified flow transports a
+      standard Gaussian to the distribution of node-set embeddings,
+    </p>
+    <div class="eq">$$\mathbf Z_t=(1-t)\,\mathbf Z_0+t\,\mathbf Z_1,\qquad \mathcal L_{\rm FM}=\mathbb E\,\big\|\mathbf v_\omega(\mathbf Z_t,t,\mathbf c)-(\mathbf Z_1-\mathbf Z_0)\big\|_2^2,$$</div>
+    <p>
+      with pairs coupled by minibatch optimal transport. The velocity network is
+      a diffusion transformer without positional encodings, so it is
+      permutation equivariant, and the audio condition $\mathbf c(\mathbf y)$
+      from an Audio Spectrogram Transformer enters through cross-attention.
+      Sampling integrates the flow with fourth-order Runge&ndash;Kutta over 100
+      steps under classifier-free guidance, and the frozen decoder turns
+      $\mathbf Z_1$ into a graph.
+    </p>
+  </div>
+</section>
+
+<!-- ===================================================================== -->
+<section id="examples">
+  <div class="measure">
+    <h2><span class="num">3</span>Listening examples</h2>
+    <p>
+      Each row is one conditioning clip; each column is the render of the graph
+      a method generated for it. In domain, the clip is the render of a held-out
+      graph from the same corpus. Out of domain, it is an NSynth note or an
+      ESC-50 environmental recording, which no synthesiser in the corpus
+      produced exactly. A hatched cell is a generated graph that does not
+      render.
+    </p>
+  </div>
+  <div class="wide">
+    <div class="controls" id="ex-controls"></div>
+    <div class="notice" id="ex-notice"></div>
+    <div id="ex-table"></div>
+  </div>
+</section>
+
+<!-- ===================================================================== -->
+<section id="results">
+  <div class="measure">
+    <h2><span class="num">4</span>Results</h2>
+    <p>
+      We compare against flow baselines that share our interpolant but differ in
+      tokenisation and symmetry bias. <span class="method">FM-Param2Tok</span>
+      tokenises each parameter and edge as a set element,
+      <span class="method">FM-Node</span> adds per-node positional encodings,
+      and <span class="method">FM-Flat</span> is a single vector with no
+      symmetry. At $n_{\max}\in\{10,20,40\}$ the baselines flow over a dense
+      vector of 450, 1500 and 5400 dimensions; GRAFT&rsquo;s representation is
+      $d_z\times n_{\max}$ = 320, 640 and 1280.
+    </p>
+    <p>
+      GRAFT renders 99.4&ndash;100% of conditions at every size, whereas the
+      baselines become unstable as graphs grow: <span class="method">FM-Flat</span>
+      and <span class="method">FM-Param2Tok</span> render under 18% of
+      in-domain conditions at $n_{\max}=20$, and at $n_{\max}=40$
+      <span class="method">FM-Node</span> renders 12.8% and
+      <span class="method">FM-Param2Tok</span> none. Each GRAFT variant
+      attains the lowest spectral error at every size and in every domain.
+    </p>
+  </div>
+  <div class="wide">
+    <figure>
+      <div class="figure-sheet">
+        <div class="legend" id="scaling-legend"></div>
+        <div class="charts" id="scaling-charts"></div>
+      </div>
+      <figcaption>
+        <span class="label">Figure 4</span>
+        Paired multi-scale spectral distance between the render and the
+        conditioning clip (top; lower is better, averaged over rendered graphs
+        only) and the fraction of conditions for which the generated graph
+        renders at all (bottom), against the maximum graph size. A missing
+        point is a method that rendered nothing. Hover for values; click a
+        legend entry to hide a method.
+      </figcaption>
+    </figure>
+
+    <h3 style="margin-top:2.4rem">Table 1 &middot; conditional generation by graph size</h3>
+    <div class="controls" id="tbl-controls"></div>
+    <div class="tbl-scroll"><table class="bt" id="main-table"></table></div>
+    <p style="font-family:var(--sans);font-size:.82rem;color:var(--ink-2);margin-top:.6rem;max-width:var(--measure)">
+      Graph metrics are in domain only: out of domain there is no reference
+      graph. $|\Delta n|$, $|\Delta e|$: node- and edge-count error; gr.: exact
+      graph recovery (isomorphism with type labels); F1: node-type F1. Audio
+      distances are averaged over successful renders only. One training seed
+      per arm; best per size block in bold.
+    </p>
+  </div>
+  <div class="measure">
+    <p style="margin-top:1.4rem">
+      For $n_{\max}\in\{10,20\}$ both aligned variants outperform
+      <span class="method">GRAFT-Unaligned</span> on all four audio distances,
+      in domain and on NSynth. <span class="method">GRAFT-CQT</span> is
+      strongest in domain, while <span class="method">GRAFT-STFT</span> is
+      strongest out of domain at $n_{\max}=10$ on both NSynth and ESC-50,
+      consistent with the constant-$Q$ transform&rsquo;s resolution of harmonic
+      structure suiting pitched material and the STFT&rsquo;s suiting broadband
+      sound. Alignment also improves graph recovery: at $n_{\max}=10$,
+      <span class="method">GRAFT-CQT</span> raises exact recovery from 37.5% to
+      42.1%. At $n_{\max}=40$ the advantage disappears.
+    </p>
+  </div>
+</section>
+
+<!-- ===================================================================== -->
+<section id="alignment">
+  <div class="measure">
+    <h2><span class="num">5</span>What alignment changes</h2>
+    <p>
+      To see whether graphs that sound alike are embedded nearby, we measure
+      CKA between held-out pooled latents $\bar{\mathbf z}$ and a multi-resolution
+      log-mel descriptor that no variant was trained on. The aligned variants
+      score 0.39&ndash;0.53 at every size against 0.13&ndash;0.21 for
+      <span class="method">GRAFT-Unaligned</span>, at an equal or higher
+      stage-1 reconstruction error. Since CKA holds at $n_{\max}=40$, the
+      advantage lost there is lost in Stage&nbsp;2, not in the alignment.
+    </p>
+  </div>
+  <div class="measure">
+    <figure>
+      <div class="figure-sheet">
+        <div class="legend" id="ae-legend"></div>
+        <div class="charts" id="ae-charts" style="grid-template-columns:repeat(2,minmax(0,1fr))"></div>
+      </div>
+      <figcaption>
+        <span class="label">Figure 5</span>
+        Stage-1 autoencoder against graph size, an upper bound for Stage 2:
+        (a) MSS between the render of the reconstructed graph and the original;
+        (b) CKA between pooled latents and a held-out log-mel descriptor.
+      </figcaption>
+    </figure>
+  </div>
+</section>
+
+<!-- ===================================================================== -->
+<section id="cite" class="measure">
+  <h2><span class="num">6</span>Citation</h2>
+  <button class="copy" type="button" data-copy="bibtex">Copy</button>
+  <pre class="bib" id="bibtex">@misc{turland2027graft,
+  title  = {Generating Modular System Topologies with
+            Audio-Aligned Latent Graph Flows},
+  author = {Turland, Sean and Wright, Alec and
+            Bilbao, Stefan and Storkey, Amos},
+  note   = {Submitted to IEEE ICASSP 2027},
+  year   = {2026}
+}</pre>
+</section>
+
+<footer>
+  <div class="wide">
+    <span id="sr-note">Audio: 4&thinsp;s, mono, lossless FLAC, not loudness-normalised.</span>
+  </div>
+</footer>
+
+<div class="tip" id="tip" role="status"></div>
+<audio id="player" preload="none"></audio>
+</body>
+</html>
